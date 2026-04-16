@@ -1,0 +1,154 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Local Document Assistant</title>
+  <style>
+    body { font-family: Segoe UI, sans-serif; margin: 0; background: #f7f9fc; color: #1f2937; }
+    .wrap { max-width: 900px; margin: 24px auto; padding: 16px; }
+    .card { background: #fff; border-radius: 12px; padding: 16px; box-shadow: 0 4px 16px rgba(0,0,0,0.06); margin-bottom: 16px; }
+    input, textarea, button { font: inherit; }
+    textarea, input[type=text] { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid #d1d5db; box-sizing: border-box; }
+    button { background: #0f766e; color: white; border: none; border-radius: 8px; padding: 10px 14px; cursor: pointer; }
+    button.secondary { background: #374151; }
+    .label { font-size: 13px; margin-bottom: 6px; color: #374151; }
+    .result { white-space: pre-wrap; background: #f8fafc; border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px; min-height: 160px; }
+    .muted { color: #6b7280; font-size: 13px; }
+    .small { font-size: 12px; }
+    .status { font-size: 13px; margin-top: 8px; }
+    .status.info { color: #334155; }
+    .status.ok { color: #0f766e; font-weight: 600; }
+    .status.error { color: #b91c1c; font-weight: 600; }
+    .actions { margin-top: 10px; display: flex; gap: 10px; flex-wrap: wrap; }
+    @media (max-width: 700px) { .actions { flex-direction: column; } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h2>Local Document Assistant</h2>
+      <p class="muted">Fully local PDF assistant (Ollama + ChromaDB).</p>
+
+      <div class="label">Upload PDF</div>
+      <input id="pdf" type="file" accept="application/pdf">
+      <div class="actions">
+        <button id="btnUpload" type="button" onclick="uploadPdf()">Upload</button>
+      </div>
+      <div id="uploadStatus" class="status info">No PDF uploaded yet.</div>
+      <div class="muted small">After upload, use the doc id shown below.</div>
+
+      <div class="label" style="margin-top: 12px;">Doc id</div>
+      <input id="docId" type="text" placeholder="auto after upload">
+    </div>
+
+    <div class="card">
+      <div class="label">Ask a question</div>
+      <textarea id="prompt" rows="4" placeholder="Ask something about your PDF"></textarea>
+      <div class="actions">
+        <button id="btnAsk" type="button" onclick="askQuestion()">Ask</button>
+      </div>
+      <div id="answer" class="result"></div>
+    </div>
+  </div>
+
+  <script>
+    let isBusy = false;
+
+    function setBusy(value) {
+      isBusy = value;
+      document.getElementById('btnUpload').disabled = value;
+      document.getElementById('btnAsk').disabled = value;
+      document.getElementById('pdf').disabled = value;
+      document.getElementById('docId').disabled = value;
+    }
+
+    function setStatus(text, level) {
+      const el = document.getElementById('uploadStatus');
+      el.className = 'status ' + (level || 'info');
+      el.textContent = text || '';
+    }
+
+    async function readJsonSafe(res) {
+      const text = await res.text();
+      if (!text) {
+        return {};
+      }
+      try {
+        return JSON.parse(text);
+      } catch (err) {
+        return { detail: text };
+      }
+    }
+
+    async function uploadPdf() {
+      if (isBusy) { return; }
+      const input = document.getElementById('pdf');
+      const file = input.files[0];
+      if (!file) {
+        setStatus('No file selected.', 'error');
+        alert('Choose a PDF file first.');
+        return;
+      }
+
+      const form = new FormData();
+      form.append('file', file);
+
+      setBusy(true);
+      setStatus('Uploading and indexing. Please wait...', 'info');
+
+      try {
+        const res = await fetch('/ingest', { method: 'POST', body: form });
+        const data = await readJsonSafe(res);
+        if (!res.ok) {
+          const msg = data.detail || JSON.stringify(data);
+          setStatus('Upload failed: ' + msg, 'error');
+          alert('Upload failed: ' + msg);
+          return;
+        }
+        document.getElementById('docId').value = data.doc_id || '';
+        setStatus('Upload complete. Doc id: ' + data.doc_id, 'ok');
+      } catch (err) {
+        const msg = err && err.message ? err.message : 'Unknown error';
+        setStatus('Upload error: ' + msg, 'error');
+        alert('Upload error: ' + msg);
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    async function askQuestion() {
+      if (isBusy) { return; }
+      const prompt = document.getElementById('prompt').value.trim();
+      const docId = document.getElementById('docId').value.trim();
+      if (!prompt) {
+        alert('Enter a question.');
+        return;
+      }
+
+      setBusy(true);
+      document.getElementById('answer').textContent = '';
+
+      try {
+        const res = await fetch('/ask', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt: prompt, doc_id: docId })
+        });
+        const data = await readJsonSafe(res);
+        if (!res.ok) {
+          const msg = data.detail || JSON.stringify(data);
+          alert('Ask failed: ' + msg);
+          return;
+        }
+        document.getElementById('answer').textContent = data.answer || '';
+      } catch (err) {
+        const msg = err && err.message ? err.message : 'Unknown error';
+        alert('Ask error: ' + msg);
+      } finally {
+        setBusy(false);
+      }
+    }
+  </script>
+</body>
+</html>
