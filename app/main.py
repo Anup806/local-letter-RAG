@@ -63,6 +63,17 @@ TEMPLATE_HINTS = {
     "draft",
 }
 
+FIELD_ALIASES = {
+    "company name": "company",
+    "company": "company",
+    "contractor name": "contractor",
+    "contractor": "contractor",
+    "engineer name": "engineer",
+    "engineer": "engineer",
+    "recipient": "recipient",
+    "date": "date",
+}
+
 
 class AskRequest(BaseModel):
     prompt: str
@@ -169,6 +180,65 @@ def _first_chunks(doc_id: str, count: int) -> List[Dict[str, Any]]:
 def _is_not_found_answer(answer: str) -> bool:
     text = (answer or "").strip().lower()
     return text == "not found in the document." or text == "not found in the document"
+
+
+def _extract_key_values(prompt: str) -> Dict[str, str]:
+    values: Dict[str, str] = {}
+    for raw_line in (prompt or "").splitlines():
+        if ":" not in raw_line:
+            continue
+        key, val = raw_line.split(":", 1)
+        key_norm = re.sub(r"[^a-z0-9 ]+", " ", key.lower()).strip()
+        key_norm = re.sub(r"\s+", " ", key_norm)
+        alias = FIELD_ALIASES.get(key_norm)
+        if not alias:
+            continue
+        val_clean = val.strip()
+        if val_clean:
+            values[alias] = val_clean
+    return values
+
+
+def _apply_field_replacements(template: str, values: Dict[str, str]) -> str:
+    if not template or not values:
+        return template
+
+    lines = template.splitlines()
+
+    def replace_if_match(targets: List[str], value: str) -> None:
+        if not value:
+            return
+        for i, line in enumerate(lines):
+            if line.strip().lower() in targets:
+                lines[i] = value
+
+    replace_if_match(["company", "company name", "company ltd", "company ltd."], values.get("company", ""))
+    replace_if_match(["contractor", "contractor name", "contractor ltd", "contractor ltd."], values.get("contractor", ""))
+    replace_if_match(["the engineer", "engineer", "engineer name"], values.get("engineer", ""))
+    replace_if_match(["recipient"], values.get("recipient", ""))
+
+    date_value = values.get("date", "")
+    if date_value:
+        for i, line in enumerate(lines):
+            if line.strip().lower().startswith("date"):
+                lines[i] = f"Date: {date_value}"
+
+    return "\n".join(lines)
+
+
+def _template_from_hit(doc_id: str, hit: Dict[str, Any], radius: int = 1) -> str:
+    meta = hit.get("metadata") or {}
+    hit_index = meta.get("chunk_index")
+    if hit_index is None:
+        return hit.get("text", "")
+    chunks = _load_chunks(doc_id)
+    if not chunks:
+        return hit.get("text", "")
+    start = max(0, hit_index - radius)
+    end = hit_index + radius
+    selected = [c for c in chunks if start <= c.get("chunk_index", -1) <= end]
+    selected.sort(key=lambda c: c.get("chunk_index", 0))
+    return "\n\n".join([c.get("text", "") for c in selected if c.get("text")])
 
 
 def _chunks_path(doc_id: str) -> str:
@@ -316,6 +386,13 @@ def ask(req: AskRequest):
 
         is_summary = _is_summary_question(prompt)
         is_template = _is_template_question(prompt)
+
+        if is_template and kw_hits:
+            values = _extract_key_values(prompt)
+            template_text = _template_from_hit(doc_id, kw_hits[0], radius=2)
+            template_text = _apply_field_replacements(template_text, values)
+            if template_text.strip():
+                return {"doc_id": doc_id, "answer": template_text}
 
         primary_hits = kw_hits if (is_template and kw_hits) else hits
         secondary_hits = hits if primary_hits is kw_hits else kw_hits
