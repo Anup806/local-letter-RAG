@@ -3,53 +3,310 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Local Document Assistant</title>
+  <title>Local Letter Assistant</title>
   <style>
-    body { font-family: Segoe UI, sans-serif; margin: 0; background: #f7f9fc; color: #1f2937; }
-    .wrap { max-width: 900px; margin: 24px auto; padding: 16px; }
-    .card { background: #fff; border-radius: 12px; padding: 16px; box-shadow: 0 4px 16px rgba(0,0,0,0.06); margin-bottom: 16px; }
-    input, textarea, button { font: inherit; }
-    textarea, input[type=text] { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid #d1d5db; box-sizing: border-box; }
-    button { background: #0f766e; color: white; border: none; border-radius: 8px; padding: 10px 14px; cursor: pointer; }
-    button.secondary { background: #374151; }
-    .label { font-size: 13px; margin-bottom: 6px; color: #374151; }
-    .result { white-space: pre-wrap; background: #f8fafc; border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px; min-height: 160px; }
-    .muted { color: #6b7280; font-size: 13px; }
+    :root {
+      --ink: #1e1b16;
+      --paper: #f7f2e8;
+      --card: #fffaf2;
+      --accent: #0b5d4b;
+      --accent-2: #c06a2b;
+      --accent-3: #1f3447;
+      --border: rgba(30, 27, 22, 0.12);
+      --shadow: 0 22px 42px rgba(18, 20, 22, 0.12);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: "Palatino Linotype", "Book Antiqua", Palatino, serif;
+      color: var(--ink);
+      background:
+        radial-gradient(900px 380px at 15% 10%, rgba(192, 106, 43, 0.18), transparent 60%),
+        radial-gradient(640px 360px at 85% 5%, rgba(11, 93, 75, 0.18), transparent 60%),
+        linear-gradient(180deg, #fbf7ef 0%, var(--paper) 100%);
+      min-height: 100vh;
+    }
+
+    body::after {
+      content: "";
+      position: fixed;
+      inset: 0;
+      background-image: radial-gradient(rgba(30, 27, 22, 0.04) 1px, transparent 1px);
+      background-size: 16px 16px;
+      pointer-events: none;
+      opacity: 0.6;
+    }
+
+    .wrap {
+      max-width: 1040px;
+      margin: 28px auto 42px;
+      padding: 0 20px 32px;
+      position: relative;
+      z-index: 1;
+    }
+
+    .hero {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-bottom: 22px;
+      animation: fadeInUp 0.6s ease both;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      border-radius: 999px;
+      font-size: 12px;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      background: rgba(11, 93, 75, 0.12);
+      color: var(--accent-3);
+      width: fit-content;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 34px;
+      font-weight: 700;
+      color: var(--accent-3);
+    }
+
+    .hero p {
+      margin: 0;
+      font-size: 15px;
+      color: rgba(30, 27, 22, 0.75);
+      max-width: 720px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 18px;
+    }
+
+    .card {
+      background: var(--card);
+      border-radius: 18px;
+      padding: 18px;
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow);
+      animation: fadeInUp 0.6s ease both;
+    }
+
+    .card:nth-child(2) { animation-delay: 0.08s; }
+
+    h2 {
+      margin: 0 0 12px;
+      font-size: 22px;
+      color: var(--accent-3);
+    }
+
+    input, textarea, button {
+      font: inherit;
+    }
+
+    textarea, input[type=text] {
+      width: 100%;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: #fff;
+      transition: border 0.2s ease;
+    }
+
+    textarea:focus, input[type=text]:focus {
+      outline: none;
+      border-color: rgba(11, 93, 75, 0.6);
+    }
+
+    button {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 10px;
+      padding: 10px 16px;
+      cursor: pointer;
+      font-weight: 600;
+      transition: transform 0.18s ease, box-shadow 0.18s ease;
+    }
+
+    button:hover { transform: translateY(-1px); box-shadow: 0 6px 14px rgba(11, 93, 75, 0.22); }
+    button:disabled { opacity: 0.6; cursor: not-allowed; box-shadow: none; }
+
+    button.ghost {
+      background: transparent;
+      border: 1px solid rgba(30, 27, 22, 0.2);
+      color: var(--accent-3);
+    }
+
+    .label {
+      font-size: 13px;
+      margin: 12px 0 6px;
+      color: rgba(30, 27, 22, 0.7);
+    }
+
+    .result {
+      white-space: pre-wrap;
+      background: #fff;
+      border: 1px solid rgba(30, 27, 22, 0.12);
+      border-radius: 12px;
+      padding: 12px;
+      min-height: 170px;
+    }
+
+    .muted { color: rgba(30, 27, 22, 0.6); font-size: 13px; }
     .small { font-size: 12px; }
+
     .status { font-size: 13px; margin-top: 8px; }
-    .status.info { color: #334155; }
-    .status.ok { color: #0f766e; font-weight: 600; }
-    .status.error { color: #b91c1c; font-weight: 600; }
-    .actions { margin-top: 10px; display: flex; gap: 10px; flex-wrap: wrap; }
-    @media (max-width: 700px) { .actions { flex-direction: column; } }
+    .status.info { color: rgba(30, 27, 22, 0.7); }
+    .status.ok { color: var(--accent); font-weight: 600; }
+    .status.error { color: #b42318; font-weight: 600; }
+
+    .actions {
+      margin-top: 10px;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .progress {
+      position: relative;
+      height: 8px;
+      background: rgba(30, 27, 22, 0.1);
+      border-radius: 999px;
+      overflow: hidden;
+      margin-top: 12px;
+    }
+
+    .progress-bar {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, var(--accent), var(--accent-2));
+      transition: width 0.2s ease;
+    }
+
+    .doc-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-top: 8px;
+    }
+
+    .doc-item {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 8px;
+      padding: 10px 12px;
+      border-radius: 12px;
+      border: 1px solid rgba(30, 27, 22, 0.12);
+      background: #fff;
+    }
+
+    .doc-name { font-weight: 600; color: var(--accent-3); }
+    .doc-meta { font-size: 12px; color: rgba(30, 27, 22, 0.6); }
+
+    .chip {
+      background: rgba(11, 93, 75, 0.12);
+      color: var(--accent-3);
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: 12px;
+      border: none;
+      cursor: pointer;
+      align-self: center;
+    }
+
+    .source-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-top: 8px;
+      font-size: 13px;
+    }
+
+    .source-item {
+      padding: 8px 10px;
+      border-radius: 10px;
+      background: rgba(31, 52, 71, 0.08);
+    }
+
+    .toggle {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      margin: 10px 0 0;
+      color: rgba(30, 27, 22, 0.7);
+    }
+
+    @keyframes fadeInUp {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    @media (max-width: 700px) {
+      .actions { flex-direction: column; }
+    }
   </style>
 </head>
 <body>
   <div class="wrap">
-    <div class="card">
-      <h2>Local Document Assistant</h2>
-      <p class="muted">Fully local PDF assistant (Ollama + ChromaDB).</p>
+    <header class="hero">
+      <div class="badge">Local Letter RAG</div>
+      <h1>Local Letter Assistant</h1>
+      <p>Index multiple PDFs, keep context intact, and stream responses from a fully local stack.</p>
+    </header>
 
-      <div class="label">Upload PDF</div>
-      <input id="pdf" type="file" accept="application/pdf">
-      <div class="actions">
-        <button id="btnUpload" type="button" onclick="uploadPdf()">Upload</button>
+    <div class="grid">
+      <div class="card">
+        <h2>Upload & Index</h2>
+        <div class="label">Upload PDF</div>
+        <input id="pdf" type="file" accept="application/pdf">
+        <div class="actions">
+          <button id="btnUpload" type="button" onclick="uploadPdf()">Upload</button>
+          <button id="btnReset" type="button" class="ghost" onclick="clearAll()">Clear all documents</button>
+        </div>
+        <div class="progress">
+          <div id="uploadBar" class="progress-bar"></div>
+        </div>
+        <div id="uploadPercent" class="muted small">0%</div>
+        <div id="uploadStatus" class="status info">No PDF uploaded yet.</div>
+
+        <div class="label">Doc id</div>
+        <input id="docId" type="text" placeholder="auto after upload">
+
+        <div class="label">Indexed documents</div>
+        <div id="docList" class="doc-list"></div>
       </div>
-      <div id="uploadStatus" class="status info">No PDF uploaded yet.</div>
-      <div class="muted small">After upload, use the doc id shown below.</div>
 
-      <div class="label" style="margin-top: 12px;">Doc id</div>
-      <input id="docId" type="text" placeholder="auto after upload">
-    </div>
+      <div class="card">
+        <h2>Ask the Document</h2>
+        <div class="label">Question</div>
+        <textarea id="prompt" rows="4" placeholder="Ask something about your document"></textarea>
 
-    <div class="card">
-      <div class="label">Ask a question</div>
-      <textarea id="prompt" rows="4" placeholder="Ask something about your PDF"></textarea>
-      <div class="muted small">Tip: For template letters, add lines like "Company name: XYZ" or "Contractor name: John".</div>
-      <div class="actions">
-        <button id="btnAsk" type="button" onclick="askQuestion()">Ask</button>
+        <div class="label">Session id</div>
+        <input id="sessionId" type="text" placeholder="auto-generated">
+
+        <label class="toggle">
+          <input id="useStream" type="checkbox" checked>
+          Stream response
+        </label>
+
+        <div class="actions">
+          <button id="btnAsk" type="button" onclick="askQuestion()">Ask</button>
+        </div>
+
+        <div class="label">Answer</div>
+        <div id="answer" class="result"></div>
+
+        <div class="label">Sources</div>
+        <div id="sources" class="source-list"></div>
       </div>
-      <div id="answer" class="result"></div>
     </div>
   </div>
 
@@ -60,14 +317,24 @@
       isBusy = value;
       document.getElementById('btnUpload').disabled = value;
       document.getElementById('btnAsk').disabled = value;
+      document.getElementById('btnReset').disabled = value;
       document.getElementById('pdf').disabled = value;
       document.getElementById('docId').disabled = value;
+      document.getElementById('sessionId').disabled = value;
     }
 
     function setStatus(text, level) {
       const el = document.getElementById('uploadStatus');
       el.className = 'status ' + (level || 'info');
       el.textContent = text || '';
+    }
+
+    function setProgress(percent) {
+      const bar = document.getElementById('uploadBar');
+      const label = document.getElementById('uploadPercent');
+      const value = Math.max(0, Math.min(100, percent || 0));
+      bar.style.width = value + '%';
+      label.textContent = value.toFixed(0) + '%';
     }
 
     async function readJsonSafe(res) {
@@ -79,6 +346,87 @@
         return JSON.parse(text);
       } catch (err) {
         return { detail: text };
+      }
+    }
+
+    function clearAnswer() {
+      document.getElementById('answer').textContent = '';
+      document.getElementById('sources').innerHTML = '';
+    }
+
+    function renderSources(items) {
+      const container = document.getElementById('sources');
+      container.innerHTML = '';
+      if (!items || !items.length) {
+        const empty = document.createElement('div');
+        empty.className = 'muted small';
+        empty.textContent = 'No sources to show yet.';
+        container.appendChild(empty);
+        return;
+      }
+      items.forEach((item) => {
+        const row = document.createElement('div');
+        row.className = 'source-item';
+        const parts = [];
+        if (item.source) { parts.push(item.source); }
+        if (item.page !== undefined && item.page !== null) { parts.push('page ' + item.page); }
+        if (item.chunk_index !== undefined && item.chunk_index !== null) {
+          parts.push('chunk ' + item.chunk_index);
+        }
+        row.textContent = parts.join(' | ');
+        container.appendChild(row);
+      });
+    }
+
+    function renderDocs(docs) {
+      const container = document.getElementById('docList');
+      container.innerHTML = '';
+      if (!docs || !docs.length) {
+        const empty = document.createElement('div');
+        empty.className = 'muted small';
+        empty.textContent = 'No documents indexed yet.';
+        container.appendChild(empty);
+        return;
+      }
+      docs.forEach((doc) => {
+        const card = document.createElement('div');
+        card.className = 'doc-item';
+
+        const info = document.createElement('div');
+        const name = document.createElement('div');
+        name.className = 'doc-name';
+        name.textContent = doc.filename || 'Untitled PDF';
+        const meta = document.createElement('div');
+        meta.className = 'doc-meta';
+        meta.textContent = (doc.chunk_count || 0) + ' chunks';
+        info.appendChild(name);
+        info.appendChild(meta);
+
+        const useBtn = document.createElement('button');
+        useBtn.className = 'chip';
+        useBtn.type = 'button';
+        useBtn.textContent = 'Use';
+        useBtn.addEventListener('click', () => {
+          document.getElementById('docId').value = doc.doc_id || '';
+        });
+
+        card.appendChild(info);
+        card.appendChild(useBtn);
+        container.appendChild(card);
+      });
+    }
+
+    async function refreshDocs() {
+      try {
+        const res = await fetch('/docs');
+        const data = await readJsonSafe(res);
+        if (!res.ok) {
+          renderDocs([]);
+          return;
+        }
+        renderDocs(data.documents || []);
+      } catch (err) {
+        renderDocs([]);
       }
     }
 
@@ -96,25 +444,155 @@
       form.append('file', file);
 
       setBusy(true);
+      setProgress(0);
       setStatus('Uploading and indexing. Please wait...', 'info');
 
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/upload', true);
+
+      xhr.upload.onprogress = (evt) => {
+        if (evt.lengthComputable) {
+          const percent = (evt.loaded / evt.total) * 100;
+          setProgress(percent);
+        }
+      };
+
+      xhr.onload = async () => {
+        try {
+          const data = xhr.responseText ? JSON.parse(xhr.responseText) : {};
+          if (xhr.status >= 400) {
+            const msg = data.detail || JSON.stringify(data);
+            setStatus('Upload failed: ' + msg, 'error');
+            alert('Upload failed: ' + msg);
+            return;
+          }
+          document.getElementById('docId').value = data.doc_id || '';
+          if (data.duplicate) {
+            setStatus('Already indexed. Doc id: ' + data.doc_id, 'ok');
+          } else {
+            setStatus('Upload complete. Doc id: ' + data.doc_id, 'ok');
+          }
+          await refreshDocs();
+        } catch (err) {
+          const msg = err && err.message ? err.message : 'Unknown error';
+          setStatus('Upload error: ' + msg, 'error');
+          alert('Upload error: ' + msg);
+        } finally {
+          setBusy(false);
+        }
+      };
+
+      xhr.onerror = () => {
+        setStatus('Upload error: network error', 'error');
+        setBusy(false);
+      };
+
+      xhr.send(form);
+    }
+
+    async function clearAll() {
+      if (isBusy) { return; }
+      if (!confirm('Clear all indexed documents?')) {
+        return;
+      }
+      setBusy(true);
       try {
-        const res = await fetch('/ingest', { method: 'POST', body: form });
+        const res = await fetch('/reset', { method: 'DELETE' });
         const data = await readJsonSafe(res);
         if (!res.ok) {
           const msg = data.detail || JSON.stringify(data);
-          setStatus('Upload failed: ' + msg, 'error');
-          alert('Upload failed: ' + msg);
+          setStatus('Reset failed: ' + msg, 'error');
+          alert('Reset failed: ' + msg);
           return;
         }
-        document.getElementById('docId').value = data.doc_id || '';
-        setStatus('Upload complete. Doc id: ' + data.doc_id, 'ok');
+        setStatus('Cleared documents. Deleted files: ' + data.deleted_files, 'ok');
+        document.getElementById('docId').value = '';
+        clearAnswer();
+        await refreshDocs();
       } catch (err) {
         const msg = err && err.message ? err.message : 'Unknown error';
-        setStatus('Upload error: ' + msg, 'error');
-        alert('Upload error: ' + msg);
+        setStatus('Reset error: ' + msg, 'error');
       } finally {
         setBusy(false);
+      }
+    }
+
+    async function askFull(prompt, docId, sessionId) {
+      const res = await fetch('/ask', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: prompt, doc_id: docId, session_id: sessionId })
+      });
+      const data = await readJsonSafe(res);
+      if (!res.ok) {
+        const msg = data.detail || JSON.stringify(data);
+        alert('Ask failed: ' + msg);
+        return;
+      }
+      document.getElementById('answer').textContent = data.answer || '';
+      if (data.session_id) {
+        document.getElementById('sessionId').value = data.session_id;
+      }
+      if (data.doc_id) {
+        document.getElementById('docId').value = data.doc_id;
+      }
+      renderSources(data.sources || []);
+    }
+
+    async function askStream(prompt, docId, sessionId) {
+      const params = new URLSearchParams();
+      params.set('prompt', prompt);
+      if (docId) { params.set('doc_id', docId); }
+      if (sessionId) { params.set('session_id', sessionId); }
+
+      const res = await fetch('/ask/stream?' + params.toString());
+      if (!res.ok) {
+        const data = await readJsonSafe(res);
+        const msg = data.detail || JSON.stringify(data);
+        alert('Ask failed: ' + msg);
+        return;
+      }
+      if (!res.body) {
+        alert('Streaming not supported by this browser.');
+        return;
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let answer = '';
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) {
+          break;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop();
+        lines.forEach((line) => {
+          const trimmed = line.trim();
+          if (!trimmed) { return; }
+          try {
+            const payload = JSON.parse(trimmed);
+            if (payload.type === 'token') {
+              answer += payload.content || '';
+              document.getElementById('answer').textContent = answer;
+            } else if (payload.type === 'done') {
+              if (payload.session_id) {
+                document.getElementById('sessionId').value = payload.session_id;
+              }
+              if (payload.doc_id) {
+                document.getElementById('docId').value = payload.doc_id;
+              }
+              renderSources(payload.sources || []);
+            } else if (payload.type === 'error') {
+              document.getElementById('answer').textContent = payload.message || 'Stream error';
+            }
+          } catch (err) {
+            // Ignore malformed lines.
+          }
+        });
       }
     }
 
@@ -122,27 +600,22 @@
       if (isBusy) { return; }
       const prompt = document.getElementById('prompt').value.trim();
       const docId = document.getElementById('docId').value.trim();
+      const sessionId = document.getElementById('sessionId').value.trim();
       if (!prompt) {
         alert('Enter a question.');
         return;
       }
 
       setBusy(true);
-      document.getElementById('answer').textContent = '';
+      clearAnswer();
 
       try {
-        const res = await fetch('/ask', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt: prompt, doc_id: docId })
-        });
-        const data = await readJsonSafe(res);
-        if (!res.ok) {
-          const msg = data.detail || JSON.stringify(data);
-          alert('Ask failed: ' + msg);
-          return;
+        const useStream = document.getElementById('useStream').checked;
+        if (useStream) {
+          await askStream(prompt, docId, sessionId);
+        } else {
+          await askFull(prompt, docId, sessionId);
         }
-        document.getElementById('answer').textContent = data.answer || '';
       } catch (err) {
         const msg = err && err.message ? err.message : 'Unknown error';
         alert('Ask error: ' + msg);
@@ -150,6 +623,10 @@
         setBusy(false);
       }
     }
+
+    window.addEventListener('DOMContentLoaded', () => {
+      refreshDocs();
+    });
   </script>
 </body>
 </html>

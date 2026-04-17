@@ -7,3 +7,5 @@ chromadb
 sentence-transformers
 numpy
 python-multipart
+pytesseract
+pillow

@@ -1,4 +1,4 @@
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 import chromadb
 
@@ -6,10 +6,12 @@ from app.config import CHROMA_DIR
 
 
 def get_client() -> chromadb.PersistentClient:
+    """Create a persistent ChromaDB client."""
     return chromadb.PersistentClient(path=CHROMA_DIR)
 
 
 def get_collection(client: chromadb.PersistentClient, name: str) -> chromadb.Collection:
+    """Get or create a ChromaDB collection by name."""
     return client.get_or_create_collection(name=name, metadata={"hnsw:space": "cosine"})
 
 
@@ -18,11 +20,23 @@ def _embed_texts(embedder, texts: List[str]) -> List[List[float]]:
     return [e.tolist() for e in emb]
 
 
-def add_chunks(collection, doc_id: str, chunks: List[Dict[str, Any]], embedder) -> int:
+def add_chunks(
+    collection,
+    doc_id: str,
+    chunks: List[Dict[str, Any]],
+    embedder,
+    source: str,
+) -> int:
+    """Embed and add chunks to a collection with metadata."""
     ids = [f"{doc_id}_{c['chunk_index']}" for c in chunks]
     documents = [c["text"] for c in chunks]
     metadatas = [
-        {"doc_id": doc_id, "page": c["page"], "chunk_index": c["chunk_index"]}
+        {
+            "doc_id": doc_id,
+            "source": source,
+            "page": c["page"],
+            "chunk_index": c["chunk_index"],
+        }
         for c in chunks
     ]
     embeddings = _embed_texts(embedder, documents)
@@ -31,13 +45,24 @@ def add_chunks(collection, doc_id: str, chunks: List[Dict[str, Any]], embedder) 
     return len(ids)
 
 
-def query_chunks(collection, query: str, embedder, top_k: int) -> List[Dict[str, Any]]:
+def query_chunks(
+    collection,
+    query: str,
+    embedder,
+    top_k: int,
+    where: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    """Query the collection and return document hits with metadata."""
     query_embedding = _embed_texts(embedder, [query])[0]
-    results = collection.query(
-        query_embeddings=[query_embedding],
-        n_results=top_k,
-        include=["documents", "metadatas", "distances"],
-    )
+    params: Dict[str, Any] = {
+        "query_embeddings": [query_embedding],
+        "n_results": top_k,
+        "include": ["documents", "metadatas", "distances"],
+    }
+    if where:
+        params["where"] = where
+
+    results = collection.query(**params)
 
     docs = results.get("documents", [[]])[0]
     metas = results.get("metadatas", [[]])[0]

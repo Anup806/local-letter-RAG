@@ -1,15 +1,48 @@
+import logging
 import re
 from typing import List, Dict
 
 import fitz  # PyMuPDF
+import pytesseract
+from PIL import Image
+
+from app.config import OCR_MIN_TEXT_CHARS
+
+logger = logging.getLogger(__name__)
+
+
+def _pixmap_to_image(pix: fitz.Pixmap) -> Image.Image:
+    """Convert a PyMuPDF pixmap to a Pillow image."""
+    mode = "RGB" if pix.alpha == 0 else "RGBA"
+    img = Image.frombytes(mode, [pix.width, pix.height], pix.samples)
+    if img.mode != "RGB":
+        img = img.convert("RGB")
+    return img
+
+
+def _ocr_page(page: fitz.Page) -> str:
+    """Run OCR on a single PDF page and return the extracted text."""
+    pix = page.get_pixmap(dpi=200)
+    img = _pixmap_to_image(pix)
+    return pytesseract.image_to_string(img)
 
 
 def extract_pdf_pages(pdf_bytes: bytes) -> List[Dict[str, str]]:
+    """Extract text per page, falling back to OCR for scanned pages."""
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     pages = []
     for i in range(len(doc)):
-        text = doc[i].get_text("text")
+        page = doc[i]
+        text = page.get_text("text")
         text = text.replace("\u00a0", " ").rstrip()
+        if len(text.strip()) < OCR_MIN_TEXT_CHARS:
+            try:
+                ocr_text = _ocr_page(page)
+                if ocr_text and ocr_text.strip():
+                    logger.info("OCR fallback used for page %s", i + 1)
+                    text = ocr_text.replace("\u00a0", " ").rstrip()
+            except Exception as exc:
+                logger.warning("OCR failed for page %s: %s", i + 1, exc)
         if text.strip():
             pages.append({"page": i + 1, "text": text})
     return pages
