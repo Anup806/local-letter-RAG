@@ -416,6 +416,30 @@ def _format_sources(hits: List[Dict[str, Any]], limit: int = 5) -> List[Dict[str
     return sources
 
 
+def _log_selected_chunks(selected: List[Dict[str, Any]]) -> None:
+    """Print the chunks that were selected for the final context."""
+    print("\n=== Selected context chunks ===", flush=True)
+    if not selected:
+        print("(none)", flush=True)
+        return
+
+    for item in selected:
+        meta = item.get("metadata") or {}
+        text = (item.get("text") or "").strip()
+        print(
+            "--- chunk_index={chunk_index} page={page} source={source} doc_id={doc_id} distance={distance} ---".format(
+                chunk_index=meta.get("chunk_index", ""),
+                page=meta.get("page", ""),
+                source=meta.get("source", ""),
+                doc_id=meta.get("doc_id", ""),
+                distance=item.get("distance", ""),
+            ),
+            flush=True,
+        )
+        print(text, flush=True)
+    print("=== End selected context chunks ===\n", flush=True)
+
+
 def _clean_context(context: str) -> str:
     """Remove consecutive duplicate lines and paragraphs from context."""
     if not context:
@@ -659,6 +683,9 @@ def ask(req: AskRequest):
         sources = retrieval["sources"]
         merged = retrieval["merged"]
         resolved_doc_id = retrieval["doc_id"]
+        selected = [h for h in merged if h.get("text")][:MAX_CONTEXT_CHUNKS]
+
+        _log_selected_chunks(selected)
 
         if not merged or len(context.strip()) < 50:
             answer = NOT_FOUND_MESSAGE
@@ -707,6 +734,9 @@ def ask_stream(
     sources = retrieval["sources"]
     merged = retrieval["merged"]
     resolved_doc_id = retrieval["doc_id"]
+    selected = [h for h in merged if h.get("text")][:MAX_CONTEXT_CHUNKS]
+
+    _log_selected_chunks(selected)
 
     if not merged or len(context.strip()) < 50:
         answer = NOT_FOUND_MESSAGE
