@@ -94,37 +94,6 @@ data/
 	docs/              # uploaded PDFs, registry, cached chunks
 ```
 
-## Setup
-
-1. Create and activate a Python virtual environment.
-2. Install dependencies.
-
-```bash
-pip install -r requirements.txt
-```
-
-3. Start Ollama and pull the default model used by the app.
-
-```bash
-ollama pull Qwen2.5:1.5b
-```
-
-4. Optional: install Tesseract OCR if you want scanned PDFs to work reliably.
-
-5. Run the app.
-
-```bash
-uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
-```
-
-If you need the compatibility entrypoint, `app.server:app` also works.
-
-6. Open the UI in your browser.
-
-```text
-http://127.0.0.1:8000
-```
-
 ## Usage Guide
 
 1. Upload a PDF from the UI or call `POST /upload`.
