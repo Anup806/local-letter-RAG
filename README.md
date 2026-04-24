@@ -30,7 +30,7 @@ The app ingests a PDF, extracts text page by page, falls back to OCR when text i
 
 ## Demo Video
 
-> Click here to watch the demo video: **[Watch the demo](https://youtu.be/BWyTLyucJ8Q)**
+> Click here to watch the demo video: **[Watch the demo](https://youtu.be/95QFCS6z438)**
 
 
 ## Architecture
