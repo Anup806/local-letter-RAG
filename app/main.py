@@ -6,6 +6,7 @@ import shutil
 import threading
 import uuid
 from datetime import datetime
+from functools import lru_cache
 from typing import Optional, List, Dict, Any, Iterable
 
 import requests
@@ -27,6 +28,7 @@ from app.config import (
     KW_TOP_K,
     MAX_CONTEXT_CHUNKS,
     REQUEST_TIMEOUT,
+    MONTHLY_REPORT_TEMPLATE_PATH,
 )
 from app.ingest import extract_pdf_pages, build_chunks
 from app.vector_store import get_client, get_collection, add_chunks, query_chunks
@@ -67,7 +69,26 @@ Rules you MUST follow:
 7. If the answer is not in the provided context, say: "This information is not in the uploaded document."
 
 Context:
-{context}
+<<CONTEXT>>
+""".strip()
+
+MONTHLY_REPORT_SYSTEM_PROMPT = """
+You are a project reporting assistant.
+Use the monthly project report template below as the ONLY output format.
+
+Rules you MUST follow:
+1. Output must follow the template text, headings, numbering, and bullet order exactly.
+2. Keep all section titles, labels, and line breaks exactly as written in the template.
+3. Fill in values using only the provided context from the daily project report.
+4. If a value is missing, keep the label and write: "This information is not in the uploaded document."
+5. For instruction lines (e.g., "Insert location Map", "S-Curve to be plotted"), keep them verbatim unless the context explicitly provides replacement data.
+6. Do not add sections or commentary outside the template.
+
+Monthly project report template:
+<<TEMPLATE>>
+
+Context:
+<<CONTEXT>>
 """.strip()
 
 NOT_FOUND_MESSAGE = "This information is not in the uploaded document."
@@ -77,6 +98,43 @@ STOPWORDS = {
     "what", "when", "where", "which", "would", "could", "should", "their", "there",
     "please",
 }
+
+
+def _is_monthly_report_request(question: str) -> bool:
+    """Check whether the question asks for a monthly report."""
+    q = (question or "").lower()
+    return any(
+        key in q
+        for key in (
+            "monthly project report",
+            "monthly progress report",
+            "monthly report",
+        )
+    )
+
+
+@lru_cache(maxsize=1)
+def _load_monthly_report_template() -> str:
+    """Load and cache the monthly report template text from PDF."""
+    path = MONTHLY_REPORT_TEMPLATE_PATH
+    if not path:
+        return ""
+    if not os.path.exists(path):
+        logger.warning("Monthly report template not found: %s", path)
+        return ""
+    try:
+        with open(path, "rb") as f:
+            pages = extract_pdf_pages(f.read())
+    except Exception as exc:
+        logger.warning("Failed to read monthly report template: %s", exc)
+        return ""
+
+    parts = [
+        (page.get("text") or "").strip()
+        for page in pages
+        if (page.get("text") or "").strip()
+    ]
+    return "\n\n".join(parts).strip()
 
 class AskRequest(BaseModel):
     """Request payload for /ask."""
@@ -153,8 +211,21 @@ def _resolve_doc_id(doc_id: str) -> str:
 
 def _build_prompt(question: str, context: str) -> tuple[str, str]:
     """Build the system and user prompts for the LLM."""
-    system = SYSTEM_PROMPT.replace("{context}", context)
-    return system, question.strip()
+    prompt = (question or "").strip()
+    if _is_monthly_report_request(prompt):
+        template = _load_monthly_report_template()
+        if not template:
+            raise HTTPException(
+                status_code=500,
+                detail="Monthly report template not found or unreadable",
+            )
+        system = MONTHLY_REPORT_SYSTEM_PROMPT
+        system = system.replace("<<TEMPLATE>>", template)
+        system = system.replace("<<CONTEXT>>", context)
+        return system, prompt
+
+    system = SYSTEM_PROMPT.replace("<<CONTEXT>>", context)
+    return system, prompt
 
 
 def _start_upload() -> None:
@@ -674,6 +745,7 @@ def ask(req: AskRequest):
         prompt = (req.prompt or "").strip()
         if not prompt:
             raise HTTPException(status_code=400, detail="prompt is required")
+        is_monthly = _is_monthly_report_request(prompt)
         doc_id = (req.doc_id or "").strip() or None
         session_id = _get_or_create_session_id(req.session_id)
         history = _get_session_history(session_id)
@@ -687,7 +759,7 @@ def ask(req: AskRequest):
 
         _log_selected_chunks(selected)
 
-        if not merged or len(context.strip()) < 50:
+        if (not merged or len(context.strip()) < 50) and not is_monthly:
             answer = NOT_FOUND_MESSAGE
             _append_session(session_id, prompt, answer)
             return {
@@ -725,6 +797,8 @@ def ask_stream(
     if not prompt:
         raise HTTPException(status_code=400, detail="prompt is required")
 
+    is_monthly = _is_monthly_report_request(prompt)
+
     doc_id_value = (doc_id or "").strip() or None
     session_value = _get_or_create_session_id(session_id)
     history = _get_session_history(session_value)
@@ -738,7 +812,7 @@ def ask_stream(
 
     _log_selected_chunks(selected)
 
-    if not merged or len(context.strip()) < 50:
+    if (not merged or len(context.strip()) < 50) and not is_monthly:
         answer = NOT_FOUND_MESSAGE
         _append_session(session_value, prompt, answer)
 

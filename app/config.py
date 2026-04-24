@@ -24,3 +24,8 @@ KW_TOP_K = int(os.getenv("KW_TOP_K", "6"))
 MAX_CONTEXT_CHUNKS = int(os.getenv("MAX_CONTEXT_CHUNKS", "10"))
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "180"))
 OCR_MIN_TEXT_CHARS = int(os.getenv("OCR_MIN_TEXT_CHARS", "100"))
+
+MONTHLY_REPORT_TEMPLATE_PATH = os.getenv(
+	"MONTHLY_REPORT_TEMPLATE_PATH",
+	os.path.join(BASE_DIR, "monthly project report template.pdf"),
+)
