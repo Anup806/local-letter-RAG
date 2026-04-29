@@ -33,7 +33,7 @@ def _build_messages(
 def ollama_chat(
     system: str,
     user: str,
-    temperature: float = 0.2,
+    temperature: float = 0.6,
     timeout: int = None,
     history: Optional[List[Dict[str, str]]] = None,
 ) -> str:
