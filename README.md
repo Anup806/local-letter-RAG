@@ -1,3 +1,8 @@
+<!--
+& ".\.venv\Scripts\python.exe" -m uvicorn app.server:app --host 127.0.0.1 --port 8000 --reload  
+-->
+
+
 # Local Letter RAG
 
 Local Letter RAG is a fully on-device retrieval-augmented generation system for PDF letters and formal documents. It is designed to solve a practical problem: most document Q&A tools either send sensitive content to external APIs or lose the document’s structure when generating answers. This project keeps the entire workflow local, preserves the source document’s layout, and returns grounded responses with citations from the indexed file.
@@ -8,7 +13,9 @@ The application is built as a small but complete production-style stack: FastAPI
 
 - Upload one or more PDFs and index them locally.
 - Ask questions against a specific document or the latest uploaded document.
-- Use hybrid retrieval: vector search plus keyword search over cached chunks.
+- Use hybrid retrieval: vector search plus BM25 keyword search over cached chunks.
+- Rerank top results with a cross-encoder before building context.
+- Enforce inline citations in generated answers.
 - Stream responses from a local Ollama model or request a full response at once.
 - Preserve letter/formal-document structure with a strict system prompt.
 - Keep all document data on disk under `data/` instead of relying on external services.
@@ -62,7 +69,8 @@ The repository is intentionally small, but the implementation includes several e
 
 - `app/ingest.py` extracts text with PyMuPDF and automatically uses Tesseract OCR when a page contains too little text.
 - `app/vector_store.py` persists normalized embeddings in ChromaDB using cosine similarity.
-- `app/main.py` combines vector search with keyword search over cached chunk files to improve recall for exact names, dates, and phrases.
+- `app/main.py` combines vector search with BM25 keyword search and cross-encoder reranking to improve recall and precision for exact names, dates, and phrases.
+- `app/main.py` enforces inline citations to keep answers grounded in the retrieved chunks.
 - `app/main.py` also enforces a formal-document system prompt so generated answers preserve the source structure instead of improvising a new one.
 - `app/main.py` limits conversational history to the most recent turns and includes repetition guards for streaming output.
 - `app/ui.html` is a lightweight single-page interface with upload, document selection, streaming Q&A, and source display.

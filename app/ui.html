@@ -368,6 +368,7 @@
         const row = document.createElement('div');
         row.className = 'source-item';
         const parts = [];
+        if (item.tag) { parts.push(item.tag); }
         if (item.source) { parts.push(item.source); }
         if (item.page !== undefined && item.page !== null) { parts.push('page ' + item.page); }
         if (item.chunk_index !== undefined && item.chunk_index !== null) {

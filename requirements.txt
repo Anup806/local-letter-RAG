@@ -9,3 +9,4 @@ numpy
 python-multipart
 pytesseract
 pillow
+rank-bm25

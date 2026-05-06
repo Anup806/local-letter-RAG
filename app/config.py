@@ -8,7 +8,7 @@ CHROMA_DIR = os.path.join(DATA_DIR, "chroma")
 COLLECTION_NAME = os.getenv("CHROMA_COLLECTION", "documents")
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/chat")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "Qwen2.5:1.5b")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "Qwen2.5:0.5b")
 OLLAMA_NUM_PREDICT = int(os.getenv("OLLAMA_NUM_PREDICT", "640"))
 OLLAMA_REPEAT_PENALTY = float(os.getenv("OLLAMA_REPEAT_PENALTY", "1.12"))
 OLLAMA_REPEAT_LAST_N = int(os.getenv("OLLAMA_REPEAT_LAST_N", "128"))
@@ -17,13 +17,27 @@ OLLAMA_TOP_K = int(os.getenv("OLLAMA_TOP_K", "40"))
 
 EMBED_MODEL_NAME = os.getenv("EMBED_MODEL_NAME", "nomic-ai/nomic-embed-text-v1.5")
 
-MAX_CHUNK_CHARS = int(os.getenv("MAX_CHUNK_CHARS", "1200"))
+MAX_CHUNK_CHARS = int(os.getenv("MAX_CHUNK_CHARS", "1500"))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "150"))
 TOP_K = int(os.getenv("TOP_K", "8"))
 KW_TOP_K = int(os.getenv("KW_TOP_K", "6"))
+BM25_TOP_K = int(os.getenv("BM25_TOP_K", str(KW_TOP_K)))
+BM25_MIN_TOKEN_LEN = int(os.getenv("BM25_MIN_TOKEN_LEN", "2"))
 MAX_CONTEXT_CHUNKS = int(os.getenv("MAX_CONTEXT_CHUNKS", "10"))
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "180"))
 OCR_MIN_TEXT_CHARS = int(os.getenv("OCR_MIN_TEXT_CHARS", "100"))
+
+RERANK_ENABLED = os.getenv("RERANK_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+RERANK_MODEL_NAME = os.getenv(
+	"RERANK_MODEL_NAME",
+	"cross-encoder/ms-marco-MiniLM-L-6-v2",
+)
+RERANK_TOP_N = int(os.getenv("RERANK_TOP_N", "25"))
+RERANK_BATCH_SIZE = int(os.getenv("RERANK_BATCH_SIZE", "16"))
+
+CITATION_STRICT = os.getenv("CITATION_STRICT", "true").lower() in ("1", "true", "yes", "on")
+CITATION_PER_PARAGRAPH = os.getenv("CITATION_PER_PARAGRAPH", "true").lower() in ("1", "true", "yes", "on")
+STREAM_CHUNK_SIZE = int(os.getenv("STREAM_CHUNK_SIZE", "160"))
 
 MONTHLY_REPORT_TEMPLATE_PATH = os.getenv(
 	"MONTHLY_REPORT_TEMPLATE_PATH",

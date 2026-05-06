@@ -9,11 +9,13 @@ from datetime import datetime
 from functools import lru_cache
 from typing import Optional, List, Dict, Any, Iterable
 
+import numpy as np
 import requests
 from fastapi import FastAPI, UploadFile, File, HTTPException, Query
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
-from sentence_transformers import SentenceTransformer
+from rank_bm25 import BM25Okapi
+from sentence_transformers import SentenceTransformer, CrossEncoder
 
 from app.config import (
     DOCS_DIR,
@@ -25,10 +27,18 @@ from app.config import (
     MAX_CHUNK_CHARS,
     CHUNK_OVERLAP,
     TOP_K,
-    KW_TOP_K,
+    BM25_TOP_K,
+    BM25_MIN_TOKEN_LEN,
     MAX_CONTEXT_CHUNKS,
     REQUEST_TIMEOUT,
     MONTHLY_REPORT_TEMPLATE_PATH,
+    RERANK_ENABLED,
+    RERANK_MODEL_NAME,
+    RERANK_TOP_N,
+    RERANK_BATCH_SIZE,
+    CITATION_STRICT,
+    CITATION_PER_PARAGRAPH,
+    STREAM_CHUNK_SIZE,
 )
 from app.ingest import extract_pdf_pages, build_chunks
 from app.vector_store import get_client, get_collection, add_chunks, query_chunks
@@ -48,6 +58,8 @@ REGISTRY_PATH = os.path.join(DOCS_DIR, "registry.json")
 logger = logging.getLogger(__name__)
 
 CHUNK_CACHE: Dict[str, List[Dict[str, Any]]] = {}
+BM25_CACHE: Dict[str, Dict[str, Any]] = {}
+BM25_LOCK = threading.Lock()
 
 UPLOAD_STATE_LOCK = threading.Lock()
 UPLOAD_IN_PROGRESS = False
@@ -67,6 +79,9 @@ Rules you MUST follow:
 5. Never omit sections that do exist in the source document.
 6. Do not repeat any section. Stop after completing the letter once.
 7. If the answer is not in the provided context, say: "This information is not in the uploaded document."
+8. Cite every answer sentence with one or more tags like [S1].
+9. Use only the citation tags provided in the context. Do not invent tags.
+10. Keep citations inline. Do not add new sections for citations.
 
 Context:
 <<CONTEXT>>
@@ -98,6 +113,188 @@ STOPWORDS = {
     "what", "when", "where", "which", "would", "could", "should", "their", "there",
     "please",
 }
+
+
+def _tokenize_for_bm25(text: str) -> List[str]:
+    """Tokenize text for BM25 using a simple alphanumeric filter."""
+    lowered = (text or "").lower()
+    lowered = re.sub(r"-\s*\n\s*", "", lowered)
+    lowered = re.sub(r"[\r\n]+", " ", lowered)
+    tokens = re.findall(r"[a-z0-9]{%d,}" % BM25_MIN_TOKEN_LEN, lowered)
+    return [t for t in tokens if t not in STOPWORDS]
+
+
+def _get_bm25_index(doc_id: str) -> Optional[Dict[str, Any]]:
+    """Return a cached BM25 index for a document."""
+    with BM25_LOCK:
+        if doc_id in BM25_CACHE:
+            return BM25_CACHE[doc_id]
+
+    chunks = _load_chunks(doc_id)
+    if not chunks:
+        return None
+
+    tokenized = [_tokenize_for_bm25(c.get("text") or "") for c in chunks]
+    if not any(tokenized):
+        return None
+
+    bm25 = BM25Okapi(tokenized)
+    data = {"bm25": bm25, "chunks": chunks}
+    with BM25_LOCK:
+        BM25_CACHE[doc_id] = data
+    return data
+
+
+def _bm25_search(query: str, doc_id: str, top_k: int) -> List[Dict[str, Any]]:
+    """Run BM25 keyword search over cached chunks."""
+    data = _get_bm25_index(doc_id)
+    if not data:
+        return []
+
+    tokens = _tokenize_for_bm25(query or "")
+    if not tokens:
+        return []
+
+    bm25 = data["bm25"]
+    chunks = data["chunks"]
+    scores = bm25.get_scores(tokens)
+    if scores is None or len(scores) == 0:
+        return []
+
+    ranked = np.argsort(scores)[::-1][:top_k]
+    results = []
+    for idx in ranked:
+        chunk = chunks[int(idx)]
+        score = float(scores[int(idx)])
+        if score <= 0:
+            continue
+        results.append({
+            "text": chunk.get("text"),
+            "metadata": {
+                "doc_id": doc_id,
+                "source": chunk.get("source"),
+                "page": chunk.get("page"),
+                "chunk_index": chunk.get("chunk_index"),
+            },
+            "distance": None,
+            "bm25_score": score,
+        })
+    return results
+
+
+def _bm25_search_multi(query: str, doc_ids: List[str], top_k: int) -> List[Dict[str, Any]]:
+    """Run BM25 keyword search across multiple documents."""
+    results: List[Dict[str, Any]] = []
+    for doc_id in doc_ids:
+        results.extend(_bm25_search(query, doc_id, top_k))
+    results.sort(key=lambda x: x.get("bm25_score", 0.0), reverse=True)
+    return results[:top_k]
+
+
+@lru_cache(maxsize=1)
+def _get_reranker() -> Optional[CrossEncoder]:
+    """Load the cross-encoder reranker lazily."""
+    if not RERANK_ENABLED:
+        return None
+    try:
+        return CrossEncoder(RERANK_MODEL_NAME)
+    except Exception as exc:
+        logger.warning("Reranker unavailable: %s", exc)
+        return None
+
+
+def _rerank_hits(prompt: str, hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Rerank top hits with a cross-encoder for better precision."""
+    if not hits:
+        return hits
+    reranker = _get_reranker()
+    if not reranker:
+        return hits
+
+    candidates = [h for h in hits if h.get("text")]
+    if not candidates:
+        return hits
+
+    top_n = min(RERANK_TOP_N, len(candidates))
+    subset = candidates[:top_n]
+    pairs = [(prompt, h.get("text") or "") for h in subset]
+    try:
+        scores = reranker.predict(pairs, batch_size=RERANK_BATCH_SIZE)
+    except Exception as exc:
+        logger.warning("Rerank failed: %s", exc)
+        return hits
+
+    for item, score in zip(subset, scores):
+        item["rerank_score"] = float(score)
+
+    reranked = sorted(subset, key=lambda h: h.get("rerank_score", 0.0), reverse=True)
+    remainder = candidates[top_n:]
+    tail = [h for h in hits if not h.get("text")]
+    return reranked + remainder + tail
+
+
+def _build_cited_context(selected: List[Dict[str, Any]]) -> tuple[str, List[Dict[str, Any]]]:
+    """Build a context string with citation tags and return a citation map."""
+    parts: List[str] = []
+    citations: List[Dict[str, Any]] = []
+    for idx, hit in enumerate(selected, start=1):
+        meta = hit.get("metadata") or {}
+        tag = f"S{idx}"
+        citations.append({
+            "tag": tag,
+            "doc_id": meta.get("doc_id"),
+            "source": meta.get("source"),
+            "page": meta.get("page"),
+            "chunk_index": meta.get("chunk_index"),
+        })
+        header = "[{tag}] source={source} page={page} chunk={chunk}".format(
+            tag=tag,
+            source=meta.get("source", ""),
+            page=meta.get("page", ""),
+            chunk=meta.get("chunk_index", ""),
+        )
+        parts.append(f"{header}\n{hit.get('text') or ''}")
+    return "\n\n".join(parts), citations
+
+
+def _citation_tag_set(citations: List[Dict[str, Any]]) -> set[str]:
+    return {f"[{c.get('tag')}]" for c in citations if c.get("tag")}
+
+
+def _validate_citations(answer: str, tags: set[str]) -> bool:
+    """Ensure the answer uses only valid tags and includes citations."""
+    if not tags:
+        return False
+    used = set(re.findall(r"\[S\d+\]", answer or ""))
+    if not used or not used.issubset(tags):
+        return False
+    if not CITATION_PER_PARAGRAPH:
+        return True
+    paragraphs = [p for p in (answer or "").split("\n\n") if p.strip()]
+    for para in paragraphs:
+        if not re.search(r"\[S\d+\]", para):
+            return False
+    return True
+
+
+def _enforce_citations(answer: str, citations: List[Dict[str, Any]], is_monthly: bool) -> str:
+    """Apply citation enforcement to the model answer."""
+    if is_monthly or not CITATION_STRICT:
+        return answer
+    if not answer or answer.strip() == NOT_FOUND_MESSAGE:
+        return answer
+    tags = _citation_tag_set(citations)
+    if not _validate_citations(answer, tags):
+        return NOT_FOUND_MESSAGE
+    return answer
+
+
+def _stream_text_chunks(text: str, chunk_size: int) -> Iterable[str]:
+    """Yield text in fixed-size chunks for streaming responses."""
+    if not text:
+        return
+    for i in range(0, len(text), max(1, chunk_size)):
+        yield text[i:i + chunk_size]
 
 
 def _is_monthly_report_request(question: str) -> bool:
@@ -369,6 +566,8 @@ def _save_chunks(doc_id: str, chunks: List[Dict[str, Any]]) -> None:
     path = _chunks_path(doc_id)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(chunks, f, ensure_ascii=False, indent=2)
+    with BM25_LOCK:
+        BM25_CACHE.pop(doc_id, None)
 
 
 def _load_chunks(doc_id: str) -> List[Dict[str, Any]]:
@@ -385,61 +584,13 @@ def _load_chunks(doc_id: str) -> List[Dict[str, Any]]:
 
 
 def _keyword_search(query: str, doc_id: str, top_k: int) -> List[Dict[str, Any]]:
-    """Run a lightweight keyword search over cached chunks."""
-    chunks = _load_chunks(doc_id)
-    if not chunks:
-        return []
-
-    def normalize(text: str) -> str:
-        lowered = (text or "").lower()
-        # join hyphenated line breaks, e.g., "sub-\nlet" -> "sublet"
-        lowered = re.sub(r"-\s*\n\s*", "", lowered)
-        lowered = re.sub(r"[\r\n]+", " ", lowered)
-        lowered = re.sub(r"[^a-z0-9\s]+", " ", lowered)
-        return re.sub(r"\s+", " ", lowered).strip()
-
-    q_norm = normalize(query or "")
-    tokens = re.findall(r"[a-z0-9]{3,}", q_norm)
-    keywords = [t for t in tokens if t not in STOPWORDS]
-    if not keywords:
-        return []
-
-    results = []
-    for chunk in chunks:
-        raw = chunk.get("text") or ""
-        text = normalize(raw)
-        if not text:
-            continue
-        score = 0
-        if q_norm and q_norm in text:
-            score += 3
-        for kw in keywords:
-            if kw in text:
-                score += 1
-        if score > 0:
-            results.append({
-                "text": raw,
-                "metadata": {
-                    "doc_id": doc_id,
-                    "source": chunk.get("source"),
-                    "page": chunk.get("page"),
-                    "chunk_index": chunk.get("chunk_index"),
-                },
-                "distance": None,
-                "score": score,
-            })
-
-    results.sort(key=lambda x: x.get("score", 0), reverse=True)
-    return results[:top_k]
+    """Run BM25 keyword search over cached chunks."""
+    return _bm25_search(query, doc_id, top_k)
 
 
 def _keyword_search_multi(query: str, doc_ids: List[str], top_k: int) -> List[Dict[str, Any]]:
-    """Run keyword search across multiple documents."""
-    results: List[Dict[str, Any]] = []
-    for doc_id in doc_ids:
-        results.extend(_keyword_search(query, doc_id, top_k))
-    results.sort(key=lambda x: x.get("score", 0), reverse=True)
-    return results[:top_k]
+    """Run BM25 keyword search across multiple documents."""
+    return _bm25_search_multi(query, doc_ids, top_k)
 
 
 def _merge_hits(primary: List[Dict[str, Any]], secondary: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -461,10 +612,27 @@ def _merge_hits(primary: List[Dict[str, Any]], secondary: List[Dict[str, Any]]) 
     return merged
 
 
-def _format_sources(hits: List[Dict[str, Any]], limit: int = 5) -> List[Dict[str, Any]]:
+def _format_sources(
+    hits: List[Dict[str, Any]],
+    limit: int = 5,
+    citation_map: Optional[List[Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
     """Return a compact list of source references for UI display."""
     sources: List[Dict[str, Any]] = []
     seen = set()
+    tag_lookup: Dict[tuple, str] = {}
+    if citation_map:
+        for item in citation_map:
+            key = (
+                item.get("doc_id"),
+                item.get("source"),
+                item.get("page"),
+                item.get("chunk_index"),
+            )
+            tag = item.get("tag")
+            if tag:
+                tag_lookup[key] = tag
+
     for hit in hits:
         meta = hit.get("metadata") or {}
         key = (
@@ -476,12 +644,16 @@ def _format_sources(hits: List[Dict[str, Any]], limit: int = 5) -> List[Dict[str
         if key in seen:
             continue
         seen.add(key)
-        sources.append({
+        entry = {
             "doc_id": meta.get("doc_id"),
             "source": meta.get("source"),
             "page": meta.get("page"),
             "chunk_index": meta.get("chunk_index"),
-        })
+        }
+        tag = tag_lookup.get(key)
+        if tag:
+            entry["tag"] = tag
+        sources.append(entry)
         if len(sources) >= limit:
             break
     return sources
@@ -580,23 +752,34 @@ def _should_stop_repetition(text: str) -> bool:
     return False
 
 
-def _retrieve_context(prompt: str, doc_id: Optional[str]) -> Dict[str, Any]:
-    """Query vector and keyword matches to build context and sources."""
+def _retrieve_context(
+    prompt: str,
+    doc_id: Optional[str],
+    include_citations: bool = True,
+) -> Dict[str, Any]:
+    """Query vector and BM25 matches to build context and sources."""
     doc_ids = _get_doc_ids_for_query(doc_id)
     resolved_doc_id = doc_id or (doc_ids[0] if doc_ids else None)
     collection = get_collection(chroma_client, COLLECTION_NAME)
     where = {"doc_id": resolved_doc_id} if resolved_doc_id else None
     hits = query_chunks(collection, prompt, embedder, TOP_K, where=where)
-    kw_hits = _keyword_search_multi(prompt, doc_ids, KW_TOP_K)
-    merged = _merge_hits(hits, kw_hits)
+    bm25_hits = _bm25_search_multi(prompt, doc_ids, BM25_TOP_K)
+    merged = _merge_hits(hits, bm25_hits)
+    merged = _rerank_hits(prompt, merged)
     selected = [h for h in merged if h.get("text")][:MAX_CONTEXT_CHUNKS]
-    context = "\n\n".join([h["text"] for h in selected if h.get("text")])
+    citations: List[Dict[str, Any]] = []
+    if include_citations:
+        context, citations = _build_cited_context(selected)
+    else:
+        context = "\n\n".join([h["text"] for h in selected if h.get("text")])
     context = _clean_context(context)
     return {
         "doc_id": resolved_doc_id or "",
         "context": context,
         "merged": merged,
-        "sources": _format_sources(merged),
+        "sources": _format_sources(merged, citation_map=citations),
+        "citations": citations,
+        "selected": selected,
     }
 
 
@@ -655,6 +838,7 @@ def reset_documents():
 
     deleted_files = _delete_docs_dir_contents()
     CHUNK_CACHE.clear()
+    BM25_CACHE.clear()
 
     try:
         collection = get_collection(chroma_client, COLLECTION_NAME)
@@ -723,6 +907,8 @@ async def ingest_pdf(file: UploadFile = File(...)):
 
         _save_chunks(doc_id, chunks)
         CHUNK_CACHE.pop(doc_id, None)
+        with BM25_LOCK:
+            BM25_CACHE.pop(doc_id, None)
 
         _register_doc(doc_id, filename, chunk_count)
 
@@ -750,12 +936,13 @@ def ask(req: AskRequest):
         session_id = _get_or_create_session_id(req.session_id)
         history = _get_session_history(session_id)
 
-        retrieval = _retrieve_context(prompt, doc_id)
+        retrieval = _retrieve_context(prompt, doc_id, include_citations=not is_monthly)
         context = retrieval["context"]
         sources = retrieval["sources"]
         merged = retrieval["merged"]
+        citations = retrieval["citations"]
         resolved_doc_id = retrieval["doc_id"]
-        selected = [h for h in merged if h.get("text")][:MAX_CONTEXT_CHUNKS]
+        selected = retrieval["selected"]
 
         _log_selected_chunks(selected)
 
@@ -772,6 +959,7 @@ def ask(req: AskRequest):
         system, user = _build_prompt(prompt, context)
         answer = ollama_chat(system=system, user=user, temperature=0.1, history=history)
         answer = _dedupe_answer(answer)
+        answer = _enforce_citations(answer, citations, is_monthly)
         _append_session(session_id, prompt, answer)
 
         return {
@@ -803,12 +991,13 @@ def ask_stream(
     session_value = _get_or_create_session_id(session_id)
     history = _get_session_history(session_value)
 
-    retrieval = _retrieve_context(prompt, doc_id_value)
+    retrieval = _retrieve_context(prompt, doc_id_value, include_citations=not is_monthly)
     context = retrieval["context"]
     sources = retrieval["sources"]
     merged = retrieval["merged"]
+    citations = retrieval["citations"]
     resolved_doc_id = retrieval["doc_id"]
-    selected = [h for h in merged if h.get("text")][:MAX_CONTEXT_CHUNKS]
+    selected = retrieval["selected"]
 
     _log_selected_chunks(selected)
 
@@ -833,6 +1022,28 @@ def ask_stream(
 
     system, user = _build_prompt(prompt, context)
 
+    if CITATION_STRICT and not is_monthly:
+        answer = ollama_chat(system=system, user=user, temperature=0.1, history=history)
+        answer = _dedupe_answer(answer)
+        answer = _enforce_citations(answer, citations, is_monthly)
+        _append_session(session_value, prompt, answer)
+
+        def stream_static() -> Iterable[str]:
+            for chunk in _stream_text_chunks(answer, STREAM_CHUNK_SIZE):
+                yield json.dumps({"type": "token", "content": chunk}) + "\n"
+            yield json.dumps({
+                "type": "done",
+                "session_id": session_value,
+                "doc_id": resolved_doc_id,
+                "sources": sources,
+            }) + "\n"
+
+        return StreamingResponse(
+            stream_static(),
+            media_type="application/x-ndjson",
+            headers={"X-Session-Id": session_value},
+        )
+
     def stream_tokens() -> Iterable[str]:
         answer_parts: List[str] = []
         try:
@@ -852,6 +1063,8 @@ def ask_stream(
 
         answer = "".join(answer_parts).strip()
         answer = _dedupe_answer(answer)
+        if CITATION_STRICT:
+            answer = _enforce_citations(answer, citations, is_monthly)
         _append_session(session_value, prompt, answer)
         yield json.dumps({
             "type": "done",
