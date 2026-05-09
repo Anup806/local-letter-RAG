@@ -95,9 +95,10 @@ def ollama_chat_stream(
     if r.status_code != 200:
         raise RuntimeError(f"Ollama error: {r.status_code} {r.text}")
 
+    # read the streamed reponse line by line
     for line in r.iter_lines(decode_unicode=True):
         if not line:
-            continue
+            continue    # continue skips empty line
         # loads convert JSON string (line) into python DICTIONARY
         data = json.loads(line)
         message = data.get("message", {}) or {}

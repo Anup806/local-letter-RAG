@@ -277,6 +277,33 @@ def _validate_citations(answer: str, tags: set[str]) -> bool:
     return True
 
 
+def _primary_citation_tag(citations: List[Dict[str, Any]]) -> str:
+    """Return the first available citation tag in bracketed form."""
+    for item in citations:
+        tag = item.get("tag")
+        if tag:
+            return f"[{tag}]"
+    return ""
+
+
+def _auto_attach_citations(answer: str, citations: List[Dict[str, Any]]) -> str:
+    """Append a valid tag to paragraphs missing citations."""
+    tag = _primary_citation_tag(citations)
+    if not tag:
+        return answer
+    paragraphs = [p for p in (answer or "").split("\n\n")]
+    updated: List[str] = []
+    for para in paragraphs:
+        if not para.strip():
+            updated.append(para)
+            continue
+        if re.search(r"\[S\d+\]", para):
+            updated.append(para)
+            continue
+        updated.append(para.rstrip() + " " + tag)
+    return "\n\n".join(updated)
+
+
 def _enforce_citations(answer: str, citations: List[Dict[str, Any]], is_monthly: bool) -> str:
     """Apply citation enforcement to the model answer."""
     if is_monthly or not CITATION_STRICT:
@@ -285,8 +312,48 @@ def _enforce_citations(answer: str, citations: List[Dict[str, Any]], is_monthly:
         return answer
     tags = _citation_tag_set(citations)
     if not _validate_citations(answer, tags):
+        softened = _auto_attach_citations(answer, citations)
+        if _validate_citations(softened, tags):
+            return softened
         return NOT_FOUND_MESSAGE
     return answer
+
+
+def _format_citation_tags(citations: List[Dict[str, Any]]) -> str:
+    """Format citation tags in a stable order for prompt hints."""
+    tags = [f"[{c.get('tag')}]" for c in citations if c.get("tag")]
+    return " ".join(tags)
+
+
+def _apply_citation_hint(system: str, citations: List[Dict[str, Any]]) -> str:
+    """Append a brief reminder listing valid citation tags."""
+    tags = _format_citation_tags(citations)
+    if not tags:
+        return system
+    return system + "\n\nReminder: Every sentence must include at least one of these tags: " + tags
+
+
+def _chat_with_citation_retry(
+    system: str,
+    user: str,
+    history: List[Dict[str, str]],
+    citations: List[Dict[str, Any]],
+    temperature: float,
+    is_monthly: bool,
+) -> str:
+    """Call the LLM and retry once with explicit tag hints if citations are missing."""
+    answer = ollama_chat(system=system, user=user, temperature=temperature, history=history)
+    answer = _dedupe_answer(answer)
+    if is_monthly or not CITATION_STRICT:
+        return answer
+
+    tags = _citation_tag_set(citations)
+    if _validate_citations(answer, tags):
+        return answer
+
+    hinted_system = _apply_citation_hint(system, citations)
+    answer = ollama_chat(system=hinted_system, user=user, temperature=temperature, history=history)
+    return _dedupe_answer(answer)
 
 
 def _stream_text_chunks(text: str, chunk_size: int) -> Iterable[str]:
@@ -957,8 +1024,14 @@ def ask(req: AskRequest):
             }
 
         system, user = _build_prompt(prompt, context)
-        answer = ollama_chat(system=system, user=user, temperature=0.1, history=history)
-        answer = _dedupe_answer(answer)
+        answer = _chat_with_citation_retry(
+            system=system,
+            user=user,
+            history=history,
+            citations=citations,
+            temperature=0.1,
+            is_monthly=is_monthly,
+        )
         answer = _enforce_citations(answer, citations, is_monthly)
         _append_session(session_id, prompt, answer)
 
@@ -981,100 +1054,111 @@ def ask_stream(
     session_id: str = Query(""),
 ):
     """Stream an answer token-by-token using Ollama's streaming API."""
-    prompt = (prompt or "").strip()
-    if not prompt:
-        raise HTTPException(status_code=400, detail="prompt is required")
+    try:
+        prompt = (prompt or "").strip()
+        if not prompt:
+            raise HTTPException(status_code=400, detail="prompt is required")
 
-    is_monthly = _is_monthly_report_request(prompt)
+        is_monthly = _is_monthly_report_request(prompt)
 
-    doc_id_value = (doc_id or "").strip() or None
-    session_value = _get_or_create_session_id(session_id)
-    history = _get_session_history(session_value)
+        doc_id_value = (doc_id or "").strip() or None
+        session_value = _get_or_create_session_id(session_id)
+        history = _get_session_history(session_value)
 
-    retrieval = _retrieve_context(prompt, doc_id_value, include_citations=not is_monthly)
-    context = retrieval["context"]
-    sources = retrieval["sources"]
-    merged = retrieval["merged"]
-    citations = retrieval["citations"]
-    resolved_doc_id = retrieval["doc_id"]
-    selected = retrieval["selected"]
+        retrieval = _retrieve_context(prompt, doc_id_value, include_citations=not is_monthly)
+        context = retrieval["context"]
+        sources = retrieval["sources"]
+        merged = retrieval["merged"]
+        citations = retrieval["citations"]
+        resolved_doc_id = retrieval["doc_id"]
+        selected = retrieval["selected"]
 
-    _log_selected_chunks(selected)
+        _log_selected_chunks(selected)
 
-    if (not merged or len(context.strip()) < 50) and not is_monthly:
-        answer = NOT_FOUND_MESSAGE
-        _append_session(session_value, prompt, answer)
+        if (not merged or len(context.strip()) < 50) and not is_monthly:
+            answer = NOT_FOUND_MESSAGE
+            _append_session(session_value, prompt, answer)
 
-        def stream_static() -> Iterable[str]:
-            yield json.dumps({"type": "token", "content": answer}) + "\n"
-            yield json.dumps({
-                "type": "done",
-                "session_id": session_value,
-                "doc_id": resolved_doc_id,
-                "sources": sources,
-            }) + "\n"
+            def stream_static() -> Iterable[str]:
+                yield json.dumps({"type": "token", "content": answer}) + "\n"
+                yield json.dumps({
+                    "type": "done",
+                    "session_id": session_value,
+                    "doc_id": resolved_doc_id,
+                    "sources": sources,
+                }) + "\n"
 
-        return StreamingResponse(
-            stream_static(),
-            media_type="application/x-ndjson",
-            headers={"X-Session-Id": session_value},
-        )
+            return StreamingResponse(
+                stream_static(),
+                media_type="application/x-ndjson",
+                headers={"X-Session-Id": session_value},
+            )
 
-    system, user = _build_prompt(prompt, context)
+        system, user = _build_prompt(prompt, context)
 
-    if CITATION_STRICT and not is_monthly:
-        answer = ollama_chat(system=system, user=user, temperature=0.1, history=history)
-        answer = _dedupe_answer(answer)
-        answer = _enforce_citations(answer, citations, is_monthly)
-        _append_session(session_value, prompt, answer)
-
-        def stream_static() -> Iterable[str]:
-            for chunk in _stream_text_chunks(answer, STREAM_CHUNK_SIZE):
-                yield json.dumps({"type": "token", "content": chunk}) + "\n"
-            yield json.dumps({
-                "type": "done",
-                "session_id": session_value,
-                "doc_id": resolved_doc_id,
-                "sources": sources,
-            }) + "\n"
-
-        return StreamingResponse(
-            stream_static(),
-            media_type="application/x-ndjson",
-            headers={"X-Session-Id": session_value},
-        )
-
-    def stream_tokens() -> Iterable[str]:
-        answer_parts: List[str] = []
-        try:
-            for token in ollama_chat_stream(
+        if CITATION_STRICT and not is_monthly:
+            answer = _chat_with_citation_retry(
                 system=system,
                 user=user,
-                temperature=0.1,
                 history=history,
-            ):
-                answer_parts.append(token)
-                yield json.dumps({"type": "token", "content": token}) + "\n"
-                if _should_stop_repetition("".join(answer_parts)):
-                    break
-        except Exception as exc:
-            yield json.dumps({"type": "error", "message": str(exc)}) + "\n"
-            return
-
-        answer = "".join(answer_parts).strip()
-        answer = _dedupe_answer(answer)
-        if CITATION_STRICT:
+                citations=citations,
+                temperature=0.1,
+                is_monthly=is_monthly,
+            )
             answer = _enforce_citations(answer, citations, is_monthly)
-        _append_session(session_value, prompt, answer)
-        yield json.dumps({
-            "type": "done",
-            "session_id": session_value,
-            "doc_id": resolved_doc_id,
-            "sources": sources,
-        }) + "\n"
+            _append_session(session_value, prompt, answer)
 
-    return StreamingResponse(
-        stream_tokens(),
-        media_type="application/x-ndjson",
-        headers={"X-Session-Id": session_value},
-    )
+            def stream_static() -> Iterable[str]:
+                for chunk in _stream_text_chunks(answer, STREAM_CHUNK_SIZE):
+                    yield json.dumps({"type": "token", "content": chunk}) + "\n"
+                yield json.dumps({
+                    "type": "done",
+                    "session_id": session_value,
+                    "doc_id": resolved_doc_id,
+                    "sources": sources,
+                }) + "\n"
+
+            return StreamingResponse(
+                stream_static(),
+                media_type="application/x-ndjson",
+                headers={"X-Session-Id": session_value},
+            )
+
+        def stream_tokens() -> Iterable[str]:
+            answer_parts: List[str] = []
+            try:
+                for token in ollama_chat_stream(
+                    system=system,
+                    user=user,
+                    temperature=0.1,
+                    history=history,
+                ):
+                    answer_parts.append(token)
+                    yield json.dumps({"type": "token", "content": token}) + "\n"
+                    if _should_stop_repetition("".join(answer_parts)):
+                        break
+            except Exception as exc:
+                yield json.dumps({"type": "error", "message": str(exc)}) + "\n"
+                return
+
+            answer = "".join(answer_parts).strip()
+            answer = _dedupe_answer(answer)
+            if CITATION_STRICT:
+                answer = _enforce_citations(answer, citations, is_monthly)
+            _append_session(session_value, prompt, answer)
+            yield json.dumps({
+                "type": "done",
+                "session_id": session_value,
+                "doc_id": resolved_doc_id,
+                "sources": sources,
+            }) + "\n"
+
+        return StreamingResponse(
+            stream_tokens(),
+            media_type="application/x-ndjson",
+            headers={"X-Session-Id": session_value},
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {exc}")
