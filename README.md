@@ -4,7 +4,7 @@
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![Offline](https://img.shields.io/badge/inference-100%25%20local-orange)
 
-A fully offline retrieval-augmented generation system for PDF letters and formal documents. All document processing, embedding, and inference runs locally — no cloud API required. The system returns grounded answers with inline citations while preserving the source document's structure.
+A fully offline retrieval-augmented generation system for PDF letters and formal documents. All document processing, embedding, and inference runs locally, no cloud API required. The system returns grounded answers with inline citations while preserving the source document's structure.
 
 ---
 
@@ -45,6 +45,7 @@ Formal letters and documents (legal notices, official correspondence, government
 - Cross-encoder reranking for improved precision on exact names, dates, and phrases
 - OCR fallback via Tesseract for scanned or image-heavy PDFs
 - Inline citations enforced in every generated answer
+- Retrieved chunk usage logged to the terminal for every query (e.g. chunk IDs 4 and 6 of 10 used to answer a question), for debugging retrieval quality
 - Streaming and non-streaming response modes
 - Structure-preserving system prompt for formal document outputs
 - Full persistence under `data/` — state survives restarts
@@ -147,6 +148,15 @@ curl -X POST http://127.0.0.1:8000/ask ^
   -d "{\"question\": \"What is the effective date mentioned in the letter?\"}"
 ```
 
+The server terminal logs which chunks were actually used to build the answer, e.g. for a 10-chunk document:
+
+```
+[retrieval] question="What is the effective date mentioned in the letter?"
+[retrieval] selected chunks: 4, 6 (of 10)
+```
+
+This makes it easy to verify the model is grounding its answer in the right part of the document instead of hallucinating.
+
 ---
 
 ## API Endpoints
@@ -188,7 +198,7 @@ Defaults are defined in `app/config.py`.
 
 - `app/ingest.py` — extracts text with PyMuPDF; falls back to Tesseract when a page has insufficient text
 - `app/vector_store.py` — persists normalized embeddings in ChromaDB using cosine similarity
-- `app/main.py` — combines vector search with BM25 and cross-encoder reranking; enforces inline citations and a formal-document system prompt; limits session history to recent turns with repetition guards
+- `app/main.py` — combines vector search with BM25 and cross-encoder reranking; enforces inline citations and a formal-document system prompt; limits session history to recent turns with repetition guards; prints the selected chunk IDs to the terminal for every `/ask` call so you can see exactly which chunks fed the answer
 - `data/docs/registry.json` — tracks uploaded file metadata and document IDs
 - `data/docs/<doc_id>/chunks.json` — cached chunk data for keyword search without reprocessing
 - Session history is in-memory only; no external state store required
